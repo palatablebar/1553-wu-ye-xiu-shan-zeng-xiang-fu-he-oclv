@@ -9,6 +9,8 @@ from .change_scorecard import service as model_service
 from .addendum_replay import service as calibration_service
 from .building_portfolio import service as monitor_service
 from .survey_budget import service as dispatch_service
+from .survey_budget.joint_review import joint_evidence, joint_review_plan
+from .survey_budget.joint_review.guards import reject_leaking_work_faces
 from .price_evidence import service as audit_service
 from .approval_dates import contracts as window_contract
 
@@ -114,7 +116,14 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     previous=monitor_service.fit_baseline(features.train,state.fingerprint)
     drift=monitor_service.scan_current(previous,features.live,state.fingerprint)
     coverage=monitor_service.coverage_by_group(features.calibration,features.live)
+    # 同一作业面实绩不得跨训练与校准窗，防止样本泄漏；命中即拒绝整批复算。
+    reject_leaking_work_faces(features.train, features.calibration)
     allocation=dispatch_service.plan_jobs(checked_live,drift.domain,capacity,mode)
+    # 复量预算合查单：无外部共用证据登记时按纯单测占用，凭证仍双向核对。
+    joint_plan, joint_risk_order = joint_review_plan(
+        checked_live, allocation, mode=mode, calibration_rows=features.calibration,
+    )
+    joint_detail, joint_ledger = joint_evidence(joint_plan, allocation)
     closed=audit_service.close_batch(documents,intake,windows,allocation,state.fingerprint,kernel.name,mode)
     performance=calibration_service.performance(evaluated)
     states = dict(closed.totals.states)
@@ -124,6 +133,13 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
         {'label': '候补', 'value': states.get('候补', 0)},
         {'label': '暂停及人工判读', 'value': states.get('暂停', 0) + states.get('人工判读', 0)},
         {'label': '额度结余', 'value': allocation.balance},
+    ]
+    joint_summary = [
+        {'label': '合查作业面', 'value': len(joint_plan.groups)},
+        {'label': '合查共用省位', 'value': joint_plan.ledger.savings},
+        {'label': '合查实占工位', 'value': joint_plan.ledger.occupied},
+        {'label': '合查后工位余额', 'value': joint_plan.ledger.balance},
+        {'label': '缺见证暂停签单', 'value': len(joint_plan.ledger.paused_keys)},
     ]
     vectors = {item.key: item for item in features.live}
     row_list = rows_for(allocation, scored, vectors)
@@ -142,7 +158,7 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
         stage_at(3, kernel.name, weight_rows + model_service.inspection_rows(kernel, features) + comparison_rows(scored)),
         stage_at(4, f'{fitted_calibration.method} · {performance.status} · {performance.count} 条回放实绩', calibration_service.calibration_evidence(performance) + [overtime] + sector),
         stage_at(5, f'{drift.status} · {len(drift.domain)} 张单据需外推判读', monitor_service.shift_evidence(drift, coverage) + operating_shift),
-        stage_at(6, f'本班占用 {allocation.capacity-allocation.balance} / {allocation.capacity} 个工位单位', dispatch_service.action_evidence(allocation) + dispatch_service.operating_group(checked_live, allocation)),
+        stage_at(6, f'本班占用 {allocation.capacity-allocation.balance} / {allocation.capacity} 个工位单位', dispatch_service.action_evidence(allocation) + dispatch_service.operating_group(checked_live, allocation) + [{'合查核对': '复量预算合查单', '作业面优先序': joint_risk_order, '台账': joint_ledger, '作业面明细': joint_detail}]),
         stage_at(7, f'处置凭证 {closed.stamp} · 额度守恒', audit_service.reconciliation_evidence(closed) + field_evidence['执行业务单']),
     ]
     details[6]['operating_rows'] = operating_rows
@@ -164,6 +180,8 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
               'policy_hash': closed.policy_hash, 'feature_stamp': state.fingerprint,
               'model': kernel.name, 'run_id': closed.stamp, 'object_name': DISPLAY['object_name'],
               'unit': DISPLAY['unit'], 'sections': details, 'flow_counts': list(states.items()),
+              'joint_review': {'summary': joint_summary, 'risk_order': joint_risk_order,
+                               'ledger': joint_ledger, 'work_faces': joint_detail},
               'measures': {'extra_pct': ('增项金额占比', '%'),
  'revisions': ('工程量签单修订', '次'),
  'photos': ('抽验影像证据', '张'),

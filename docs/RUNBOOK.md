@@ -16,3 +16,5 @@ docker compose exec -T app python -m scopebill.entry evaluate --input sample_dat
 ```
 
 在网页筛选单号、作业区或原因，点击结果中的单号查看完整字段与处置证据。下载 JSON 可检视结果、对照原始资料摘要和模型特征版本。
+
+复量预算合查单在响应的 `joint_review` 字段：`summary` 给出作业面数、共用省位、实占工位与缺见证暂停数，`work_faces` 逐作业面列出覆盖签单、共用/单测测项、省位、实占与覆盖/校准风险，`risk_order` 是工位紧张时的高风险优先序，`ledger` 为可核对台账。合查实占 + 共用省位必须等于主派单实占；同一作业面实绩跨训练与校准窗时整批拒绝并提示泄漏作业面。
